@@ -12,12 +12,3 @@
 - A second coordinate system for rendering the ground
 
 
-
-Render Mesh to depth buffer
-render mesh
-render plane, sampling depth buffer
-Where do I sample the depth buffer???
-apply blur
-
-
-what happens when camera changes, and model transform???
