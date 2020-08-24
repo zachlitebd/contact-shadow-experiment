@@ -9,6 +9,6 @@
 ## TODO:
 - Blur
 - Parameterized depth camera bounds
-- A second coordinate system for rendering the ground
+- ~~A second coordinate system for rendering the ground~~
 
 

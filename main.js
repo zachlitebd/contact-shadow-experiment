@@ -1,8 +1,8 @@
 import { mat4, quat } from "gl-matrix";
 
-const DepthMapRes = 1024;
+const DepthMapRes = 512;
 const depthCamera = {
-  eye: [0, -1, 0.001],
+  eye: [0, -1, 0.000001],
   look: [0, 0, 0],
   up: [0, 1, 0],
 };
@@ -14,14 +14,26 @@ const depthView = mat4.lookAt(
   depthCamera.up
 );
 
+const planeCamera = {
+  eye: [0, 1, 0.00001],
+  look: [0, 0, 0],
+  up: [0, 1, 0]
+}
+const planeView = mat4.lookAt(
+  mat4.create(),
+  planeCamera.eye,
+  planeCamera.look,
+  planeCamera.up
+)
+
 const cubeTransform = {
   translation: [0, 0, 0],
-  rotation: [0, 0, 0],
+  rotation: [0, 0, 45],
   scale: [1, 1, 1],
 };
 
 const planeTransform = {
-  translation: [0, -0.75, 0],
+  translation: [0, -1, 0],
   rotation: [90, 0, 0],
   scale: [10, 10, 1],
 };
@@ -54,6 +66,10 @@ const depthProjection = mat4.ortho(
   frustrumSize
 );
 
+const planeProjection = mat4.ortho(
+  mat4.create(), -5, 5, 5, -5, -5, 5
+)
+
 const depthFrag = `
   precision mediump float;
   varying vec3 vPosition;
@@ -78,40 +94,35 @@ const planeFrag = `
   uniform float h;
   varying vec3 vWorldPos;
   void main() {
-    float bound = 1.0;
+    float bound = 2.0;
     vec4 color;
+    
     if (vWorldPos.x >= -bound && vWorldPos.x <= bound  && vWorldPos.z >= -bound && vWorldPos.z <= bound) {
+      
       vec2 sampleCoord = vWorldPos.xz * .5 + .5;
       float depth = texture2D(depthMap, sampleCoord).z;
+
       if (depth == 0.0) {
-        depth = .95;
+        color = vec4(1.0);
+      } else {
+        color = vec4(depth, depth, depth, 1.0);
       }
-      color = vec4(depth, depth, depth, 1.0);
+    
     } else {
-      color = vec4(.95, .95, .95, 1.0);
+      color = vec4(1.0);
     }
-      // vec4 sum = vec4( 0.0 );
-      // sum += texture2D( depthMap, vec2( sampleCoord.x - 4.0 * h, sampleCoord.y ) ) * 0.051;
-      // sum += texture2D( depthMap, vec2( sampleCoord.x - 3.0 * h, sampleCoord.y ) ) * 0.0918;
-      // sum += texture2D( depthMap, vec2( sampleCoord.x - 2.0 * h, sampleCoord.y ) ) * 0.12245;
-      // sum += texture2D( depthMap, vec2( sampleCoord.x - 1.0 * h, sampleCoord.y ) ) * 0.1531;
-      // sum += texture2D( depthMap, vec2( sampleCoord.x, sampleCoord.y ) ) * 0.1633;
-      // sum += texture2D( depthMap, vec2( sampleCoord.x + 1.0 * h, sampleCoord.y ) ) * 0.1531;
-      // sum += texture2D( depthMap, vec2( sampleCoord.x + 2.0 * h, sampleCoord.y ) ) * 0.12245;
-      // sum += texture2D( depthMap, vec2( sampleCoord.x + 3.0 * h, sampleCoord.y ) ) * 0.0918;
-      // sum += texture2D( depthMap, vec2( sampleCoord.x + 4.0 * h, sampleCoord.y ) ) * 0.051;
-      // gl_FragColor = sum;
+
     gl_FragColor = color;
   }`;
 
 const planeVert = `
   precision mediump float;
-  uniform mat4 projection, view, model, cubeModel;
+  uniform mat4 planeProjection, planeView, model;
   attribute vec3 position;
   varying vec3 vWorldPos;
   void main() {
     vWorldPos = (model * vec4(position, 1.0)).xyz;
-    gl_Position = projection * view * model * vec4(position, 1.0);
+    gl_Position = planeProjection * planeView * model * vec4(position, 1.0);
   }`;
 
 const cubeFrag = `
@@ -132,7 +143,7 @@ const cubeVert = `
   }`;
 
 window.onload = () => {
-  const regl = require("regl")({ extensions: "OES_texture_float" });
+  const regl = require("regl")({ extensions: ["OES_texture_float", "OES_texture_float_linear"] });
   const camera = require("regl-camera")(regl, { damping: 0 });
   const primitiveCube = require("primitive-cube");
   const primitivePlane = require("primitive-plane");
@@ -144,11 +155,15 @@ window.onload = () => {
     color: regl.texture({
       width: DepthMapRes,
       height: DepthMapRes,
-      wrap: "clamp",
-      type: "float",
     }),
-    depth: true,
   });
+
+  const planeFrameBuffer = regl.framebuffer({
+    color: regl.texture({
+      width: DepthMapRes,
+      height: DepthMapRes,
+    }),
+  })
 
   const drawDepth = regl({
     frag: depthFrag,
@@ -167,11 +182,108 @@ window.onload = () => {
       position: plane.positions,
     },
     uniforms: {
+      planeView,
+      planeProjection,
       depthMap: depthFrameBuffer,
       model: planeModelTransform,
-      h: 4.5 * (1 / 256),
     },
     elements: plane.cells,
+    framebuffer: planeFrameBuffer
+  });
+
+
+
+  const drawPlane = regl({
+    frag: `
+      precision mediump float;
+      uniform sampler2D shadowTexture;
+      varying vec3 vWorldPos;
+
+      vec4 blurThreeHoriz(sampler2D image, vec2 uv, float h) {
+
+        vec4 sum = vec4( 0.0 );
+        sum += texture2D( image, vec2( uv.x - 4.0 * h, uv.y ) ) * 0.051;
+        sum += texture2D( image, vec2( uv.x - 3.0 * h, uv.y ) ) * 0.0918;
+        sum += texture2D( image, vec2( uv.x - 2.0 * h, uv.y ) ) * 0.12245;
+        sum += texture2D( image, vec2( uv.x - 1.0 * h, uv.y ) ) * 0.1531;
+        sum += texture2D( image, vec2( uv.x, uv.y ) ) * 0.1633;
+        sum += texture2D( image, vec2( uv.x + 1.0 * h, uv.y ) ) * 0.1531;
+        sum += texture2D( image, vec2( uv.x + 2.0 * h, uv.y ) ) * 0.12245;
+        sum += texture2D( image, vec2( uv.x + 3.0 * h, uv.y ) ) * 0.0918;
+        sum += texture2D( image, vec2( uv.x + 4.0 * h, uv.y ) ) * 0.051;
+        return sum;
+      }
+
+      vec4 blurThreeVertical(sampler2D image, vec2 uv, float v) {
+        vec4 sum = vec4( 0.0 );
+
+        sum += texture2D( image, vec2( uv.x, uv.y - 4.0 * v ) ) * 0.051;
+        sum += texture2D( image, vec2( uv.x, uv.y - 3.0 * v ) ) * 0.0918;
+        sum += texture2D( image, vec2( uv.x, uv.y - 2.0 * v ) ) * 0.12245;
+        sum += texture2D( image, vec2( uv.x, uv.y - 1.0 * v ) ) * 0.1531;
+        sum += texture2D( image, vec2( uv.x, uv.y ) ) * 0.1633;
+        sum += texture2D( image, vec2( uv.x, uv.y + 1.0 * v ) ) * 0.1531;
+        sum += texture2D( image, vec2( uv.x, uv.y + 2.0 * v ) ) * 0.12245;
+        sum += texture2D( image, vec2( uv.x, uv.y + 3.0 * v ) ) * 0.0918;
+        sum += texture2D( image, vec2( uv.x, uv.y + 4.0 * v ) ) * 0.051;
+        
+        return sum;
+      }
+
+      vec4 blur9(sampler2D image, vec2 uv, vec2 resolution, vec2 direction) {
+        vec4 color = vec4(0.0);
+        vec2 off1 = vec2(1.411764705882353) * direction;
+        vec2 off2 = vec2(3.2941176470588234) * direction;
+        vec2 off3 = vec2(5.176470588235294) * direction;
+        color += texture2D(image, uv) * 0.1964825501511404;
+        color += texture2D(image, uv + (off1 / resolution)) * 0.2969069646728344;
+        color += texture2D(image, uv - (off1 / resolution)) * 0.2969069646728344;
+        color += texture2D(image, uv + (off2 / resolution)) * 0.09447039785044732;
+        color += texture2D(image, uv - (off2 / resolution)) * 0.09447039785044732;
+        color += texture2D(image, uv + (off3 / resolution)) * 0.010381362401148057;
+        color += texture2D(image, uv - (off3 / resolution)) * 0.010381362401148057;
+        return color;
+      }
+
+      void main() {
+        vec2 sampleCoord = vWorldPos.xy;
+        // float v = 4.0;
+        // vec4 vertical = blurThreeVertical(shadowTexture, sampleCoord, v * 1.0 / 256.0);
+        // vec4 horiz = blurThreeHoriz(shadowTexture, sampleCoord, v * 1.0 / 256.0);
+        // gl_FragColor = mix(vertical, horiz, .5);
+        
+        vec2 res = vec2(512);
+        vec4 vertical = blur9(shadowTexture, sampleCoord, res, vec2(0,1));
+        vec4 horiz = blur9(shadowTexture, sampleCoord, res, vec2(1,0));
+        gl_FragColor = mix(vertical, horiz, .5);
+      }
+
+    `,
+    vert: `
+      precision mediump float;
+      attribute vec3 position;
+      attribute vec2 uv;
+      uniform mat4 projection, view, model;
+      varying vec3 vWorldPos;
+      void main() {
+        vec4 pos = projection * view * model * vec4(position, 1.0);
+        vWorldPos = vec3(uv, 1.0);
+        gl_Position = pos;
+      }
+    `,
+    attributes: {
+      position: plane.positions,
+      uv: plane.uvs
+    },
+    uniforms: {
+      model: planeModelTransform,
+      shadowTexture: planeFrameBuffer
+    },
+    elements: plane.cells,
+    cull: {
+      enable: true,
+      face: "front"
+    },
   });
 
   const drawCube = regl({
@@ -188,7 +300,7 @@ window.onload = () => {
     elements: cube.cells,
   });
 
-  regl.frame(() => {
+  regl.frame(({tick}) => {
     camera(() => {
       regl.clear({
         color: [1, 1, 1, 1],
@@ -201,7 +313,13 @@ window.onload = () => {
         framebuffer: depthFrameBuffer,
       });
 
-      cubeTransform.rotation[1] += 1;
+      regl.clear({
+        color: [0,0,0,1],
+        depth: true,
+        framebuffer: planeFrameBuffer
+      })
+
+      cubeTransform.rotation[0] = Math.sin(tick / 100) * 90;
       cubeModelTransform = getModelTransform(cubeTransform);
 
       // render the cube to the display for human consumption
@@ -212,6 +330,8 @@ window.onload = () => {
 
       // render the ground plane
       drawShadowPlane();
+
+      drawPlane();
     });
   });
 };
