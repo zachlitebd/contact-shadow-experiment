@@ -28,7 +28,7 @@ const planeView = mat4.lookAt(
 
 const cubeTransform = {
   translation: [0, 0, 0],
-  rotation: [0, 0, 45],
+  rotation: [0, 45,0],
   scale: [1, 1, 1],
 };
 
@@ -94,7 +94,7 @@ const planeFrag = `
   uniform float h;
   varying vec3 vWorldPos;
   void main() {
-    float bound = 2.0;
+    float bound = 1.0;
     vec4 color;
     
     if (vWorldPos.x >= -bound && vWorldPos.x <= bound  && vWorldPos.z >= -bound && vWorldPos.z <= bound) {
@@ -105,7 +105,7 @@ const planeFrag = `
       if (depth == 0.0) {
         color = vec4(1.0);
       } else {
-        color = vec4(depth, depth, depth, 1.0);
+        color = vec4(depth, depth, depth, .75);
       }
     
     } else {
@@ -158,6 +158,14 @@ window.onload = () => {
     }),
   });
 
+
+  const blurFBO = regl.framebuffer({
+    color: regl.texture({
+      width: DepthMapRes,
+      height: DepthMapRes,
+    }),
+  })
+
   const planeFrameBuffer = regl.framebuffer({
     color: regl.texture({
       width: DepthMapRes,
@@ -193,6 +201,82 @@ window.onload = () => {
 
 
 
+  // first pass: blur and write to new fbo
+  const drawBlur = regl({
+    frag: `
+      precision mediump float;
+      uniform sampler2D shadowTexture;
+      varying vec3 vWorldPos;
+
+      vec4 blurThreeHoriz(sampler2D image, vec2 uv, float h) {
+
+        vec4 sum = vec4( 0.0 );
+        sum += texture2D( image, vec2( uv.x - 4.0 * h, uv.y ) ) * 0.051;
+        sum += texture2D( image, vec2( uv.x - 3.0 * h, uv.y ) ) * 0.0918;
+        sum += texture2D( image, vec2( uv.x - 2.0 * h, uv.y ) ) * 0.12245;
+        sum += texture2D( image, vec2( uv.x - 1.0 * h, uv.y ) ) * 0.1531;
+        sum += texture2D( image, vec2( uv.x, uv.y ) ) * 0.1633;
+        sum += texture2D( image, vec2( uv.x + 1.0 * h, uv.y ) ) * 0.1531;
+        sum += texture2D( image, vec2( uv.x + 2.0 * h, uv.y ) ) * 0.12245;
+        sum += texture2D( image, vec2( uv.x + 3.0 * h, uv.y ) ) * 0.0918;
+        sum += texture2D( image, vec2( uv.x + 4.0 * h, uv.y ) ) * 0.051;
+        return sum;
+      }
+
+      vec4 blurThreeVertical(sampler2D image, vec2 uv, float v) {
+        vec4 sum = vec4( 0.0 );
+
+        sum += texture2D( image, vec2( uv.x, uv.y - 4.0 * v ) ) * 0.051;
+        sum += texture2D( image, vec2( uv.x, uv.y - 3.0 * v ) ) * 0.0918;
+        sum += texture2D( image, vec2( uv.x, uv.y - 2.0 * v ) ) * 0.12245;
+        sum += texture2D( image, vec2( uv.x, uv.y - 1.0 * v ) ) * 0.1531;
+        sum += texture2D( image, vec2( uv.x, uv.y ) ) * 0.1633;
+        sum += texture2D( image, vec2( uv.x, uv.y + 1.0 * v ) ) * 0.1531;
+        sum += texture2D( image, vec2( uv.x, uv.y + 2.0 * v ) ) * 0.12245;
+        sum += texture2D( image, vec2( uv.x, uv.y + 3.0 * v ) ) * 0.0918;
+        sum += texture2D( image, vec2( uv.x, uv.y + 4.0 * v ) ) * 0.051;
+        
+        return sum;
+      }
+
+      void main() {
+        vec2 sampleCoord = vWorldPos.xy;
+        float v = 5.0;
+        float res = ${DepthMapRes}.0;
+        vec4 vertical = blurThreeVertical(shadowTexture, sampleCoord, v * 1.0 / res);
+        vec4 horiz = blurThreeHoriz(shadowTexture, sampleCoord, v * 1.0 / res);
+        gl_FragColor = mix(vertical, horiz, .5);
+      }
+    
+    `,
+    vert: `
+      precision mediump float;
+      attribute vec3 position;
+      attribute vec2 uv;
+      uniform mat4 planeProjection, planeView, model;
+      varying vec3 vWorldPos;
+      void main() {
+        vec4 pos = planeProjection * planeView * model * vec4(position, 1.0);
+        vWorldPos = vec3(uv, 1.0);
+        gl_Position = pos;
+      }
+    `,
+    attributes: {
+      position: plane.positions,
+      uv: plane.uvs
+    },
+    uniforms: {
+      planeProjection,
+      planeView,
+      model: planeModelTransform,
+      shadowTexture: planeFrameBuffer
+    },
+    framebuffer: blurFBO,
+    elements: plane.cells
+  });
+
+
+  // second pass
   const drawPlane = regl({
     frag: `
       precision mediump float;
@@ -230,31 +314,12 @@ window.onload = () => {
         return sum;
       }
 
-      vec4 blur9(sampler2D image, vec2 uv, vec2 resolution, vec2 direction) {
-        vec4 color = vec4(0.0);
-        vec2 off1 = vec2(1.411764705882353) * direction;
-        vec2 off2 = vec2(3.2941176470588234) * direction;
-        vec2 off3 = vec2(5.176470588235294) * direction;
-        color += texture2D(image, uv) * 0.1964825501511404;
-        color += texture2D(image, uv + (off1 / resolution)) * 0.2969069646728344;
-        color += texture2D(image, uv - (off1 / resolution)) * 0.2969069646728344;
-        color += texture2D(image, uv + (off2 / resolution)) * 0.09447039785044732;
-        color += texture2D(image, uv - (off2 / resolution)) * 0.09447039785044732;
-        color += texture2D(image, uv + (off3 / resolution)) * 0.010381362401148057;
-        color += texture2D(image, uv - (off3 / resolution)) * 0.010381362401148057;
-        return color;
-      }
-
       void main() {
         vec2 sampleCoord = vWorldPos.xy;
-        // float v = 4.0;
-        // vec4 vertical = blurThreeVertical(shadowTexture, sampleCoord, v * 1.0 / 256.0);
-        // vec4 horiz = blurThreeHoriz(shadowTexture, sampleCoord, v * 1.0 / 256.0);
-        // gl_FragColor = mix(vertical, horiz, .5);
-        
-        vec2 res = vec2(512);
-        vec4 vertical = blur9(shadowTexture, sampleCoord, res, vec2(0,1));
-        vec4 horiz = blur9(shadowTexture, sampleCoord, res, vec2(1,0));
+        float v = 5.0 * .5;
+        float res = ${DepthMapRes}.0;
+        vec4 vertical = blurThreeVertical(shadowTexture, sampleCoord, v * 1.0 / res);
+        vec4 horiz = blurThreeHoriz(shadowTexture, sampleCoord, v * 1.0 / res);
         gl_FragColor = mix(vertical, horiz, .5);
       }
 
@@ -277,7 +342,7 @@ window.onload = () => {
     },
     uniforms: {
       model: planeModelTransform,
-      shadowTexture: planeFrameBuffer
+      shadowTexture: blurFBO
     },
     elements: plane.cells,
     cull: {
@@ -319,7 +384,7 @@ window.onload = () => {
         framebuffer: planeFrameBuffer
       })
 
-      cubeTransform.rotation[0] = Math.sin(tick / 100) * 90;
+      // cubeTransform.rotation[1] = Math.sin(tick / 100) * 90;
       cubeModelTransform = getModelTransform(cubeTransform);
 
       // render the cube to the display for human consumption
@@ -328,9 +393,14 @@ window.onload = () => {
       // render the cube to the depth map for ground plane consumption
       drawDepth(() => preDrawCube());
 
-      // render the ground plane
+      // render the ground plane to a texture
       drawShadowPlane();
 
+
+      // blur texture. 
+      drawBlur();
+
+      // draw plane, sampling blurred texture.
       drawPlane();
     });
   });
