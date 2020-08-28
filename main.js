@@ -439,7 +439,7 @@ window.onload = () => {
         framebuffer: verticalBlurFBO,
       });
 
-      cubeTransform.rotation[0] += 1;
+      cubeTransform.rotation[0] += .5;
       cubeModelTransform = getModelTransform(cubeTransform);
 
       // render the cube to the display for human consumption
