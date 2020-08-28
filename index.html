@@ -1,5 +1,29 @@
 <html>
   <head>
     <script src="./main.js"></script>
+    <style>
+      #sliders {
+        position: absolute;
+        z-index: 100;
+      }
+    </style>
   </head>
+
+  <body>
+    <div id="sliders">
+      <label>
+        Blur Amount
+        <input id="blur-amount" type="range" min="0" max="20" step=".1" />
+      </label>
+      <!-- <label>
+        Blur Opacity
+        <input id="blur-opacity" type="range" min="0" max="1" step=".1" value="1" />
+      </label> -->
+      <label>
+        Plane Offset
+        <input id="plane-offset" type="range" min="-2" max="-.5" step=".1" value="-1" />
+      </label>
+
+    </div>
+  </body>
 </html>

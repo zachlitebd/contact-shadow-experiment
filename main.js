@@ -1,6 +1,6 @@
 import { mat4, quat } from "gl-matrix";
 
-const DepthMapRes = 512;
+const FBORES = 1024;
 const depthCamera = {
   eye: [0, -1, 0.000001],
   look: [0, 0, 0],
@@ -17,18 +17,18 @@ const depthView = mat4.lookAt(
 const planeCamera = {
   eye: [0, 1, 0.00001],
   look: [0, 0, 0],
-  up: [0, 1, 0]
-}
+  up: [0, 1, 0],
+};
 const planeView = mat4.lookAt(
   mat4.create(),
   planeCamera.eye,
   planeCamera.look,
   planeCamera.up
-)
+);
 
 const cubeTransform = {
   translation: [0, 0, 0],
-  rotation: [0, 45,0],
+  rotation: [0, 0, 45],
   scale: [1, 1, 1],
 };
 
@@ -53,7 +53,6 @@ function getModelTransform(transform) {
 }
 
 let cubeModelTransform = getModelTransform(cubeTransform);
-const planeModelTransform = getModelTransform(planeTransform);
 
 const frustrumSize = 1;
 const depthProjection = mat4.ortho(
@@ -66,9 +65,7 @@ const depthProjection = mat4.ortho(
   frustrumSize
 );
 
-const planeProjection = mat4.ortho(
-  mat4.create(), -5, 5, 5, -5, -5, 5
-)
+const planeProjection = mat4.ortho(mat4.create(), -5, 5, 5, -5, -5, 5);
 
 const depthFrag = `
   precision mediump float;
@@ -91,6 +88,7 @@ const depthVert = `
 const planeFrag = `
   precision mediump float;
   uniform sampler2D depthMap;
+  uniform float blurOpacity;
   uniform float h;
   varying vec3 vWorldPos;
   void main() {
@@ -105,7 +103,7 @@ const planeFrag = `
       if (depth == 0.0) {
         color = vec4(1.0);
       } else {
-        color = vec4(depth, depth, depth, .75);
+        color = vec4(depth, depth, depth, blurOpacity);
       }
     
     } else {
@@ -142,8 +140,83 @@ const cubeVert = `
     gl_Position = projection * view * model * vec4(position, 1.0);
   }`;
 
+const blurVertSource = `
+    precision mediump float;
+    attribute vec3 position;
+    attribute vec2 uv;
+    uniform mat4 planeProjection, planeView, model;
+    varying vec3 vWorldPos;
+    void main() {
+      vec4 pos = planeProjection * planeView * model * vec4(position, 1.0);
+      vWorldPos = vec3(uv, 1.0);
+      gl_Position = pos;
+    }
+  `;
+
+const blurVerticalFragSource = `
+  precision mediump float;
+  uniform sampler2D fbo;
+  uniform float blurAmount;
+  varying vec3 vWorldPos;
+
+  vec4 blurThreeVertical(sampler2D image, vec2 uv, float v) {
+    vec4 sum = vec4( 0.0 );
+
+    sum += texture2D( image, vec2( uv.x, uv.y - 4.0 * v ) ) * 0.051;
+    sum += texture2D( image, vec2( uv.x, uv.y - 3.0 * v ) ) * 0.0918;
+    sum += texture2D( image, vec2( uv.x, uv.y - 2.0 * v ) ) * 0.12245;
+    sum += texture2D( image, vec2( uv.x, uv.y - 1.0 * v ) ) * 0.1531;
+    sum += texture2D( image, vec2( uv.x, uv.y ) ) * 0.1633;
+    sum += texture2D( image, vec2( uv.x, uv.y + 1.0 * v ) ) * 0.1531;
+    sum += texture2D( image, vec2( uv.x, uv.y + 2.0 * v ) ) * 0.12245;
+    sum += texture2D( image, vec2( uv.x, uv.y + 3.0 * v ) ) * 0.0918;
+    sum += texture2D( image, vec2( uv.x, uv.y + 4.0 * v ) ) * 0.051;
+  
+    return sum;
+  }
+
+  void main() {
+    vec2 sampleCoord = vWorldPos.xy;
+    float v = blurAmount;
+    float res = ${FBORES}.0;
+    vec4 vertical = blurThreeVertical(fbo, sampleCoord, v * 1.0 / res);
+    gl_FragColor = vertical;
+  }
+`;
+
+const blurHorizontalFragSource = `
+  precision mediump float;
+  uniform sampler2D fbo;
+  uniform float blurAmount;
+  varying vec3 vWorldPos;
+
+  vec4 blurThreeHoriz(sampler2D image, vec2 uv, float h) {
+    vec4 sum = vec4( 0.0 );
+    sum += texture2D( image, vec2( uv.x - 4.0 * h, uv.y ) ) * 0.051;
+    sum += texture2D( image, vec2( uv.x - 3.0 * h, uv.y ) ) * 0.0918;
+    sum += texture2D( image, vec2( uv.x - 2.0 * h, uv.y ) ) * 0.12245;
+    sum += texture2D( image, vec2( uv.x - 1.0 * h, uv.y ) ) * 0.1531;
+    sum += texture2D( image, vec2( uv.x, uv.y ) ) * 0.1633;
+    sum += texture2D( image, vec2( uv.x + 1.0 * h, uv.y ) ) * 0.1531;
+    sum += texture2D( image, vec2( uv.x + 2.0 * h, uv.y ) ) * 0.12245;
+    sum += texture2D( image, vec2( uv.x + 3.0 * h, uv.y ) ) * 0.0918;
+    sum += texture2D( image, vec2( uv.x + 4.0 * h, uv.y ) ) * 0.051;
+    return sum;
+  }
+
+  void main() {
+    vec2 sampleCoord = vWorldPos.xy;
+    float v = blurAmount;
+    float res = ${FBORES}.0;
+    vec4 horiz = blurThreeHoriz(fbo, sampleCoord, v * 1.0 / res);
+    gl_FragColor = horiz;
+  }
+`;
+
 window.onload = () => {
-  const regl = require("regl")({ extensions: ["OES_texture_float", "OES_texture_float_linear"] });
+  const regl = require("regl")({
+    extensions: ["OES_texture_float", "OES_texture_float_linear"],
+  });
   const camera = require("regl-camera")(regl, { damping: 0 });
   const primitiveCube = require("primitive-cube");
   const primitivePlane = require("primitive-plane");
@@ -153,25 +226,24 @@ window.onload = () => {
 
   const depthFrameBuffer = regl.framebuffer({
     color: regl.texture({
-      width: DepthMapRes,
-      height: DepthMapRes,
+      width: FBORES,
+      height: FBORES,
     }),
   });
 
-
   const blurFBO = regl.framebuffer({
     color: regl.texture({
-      width: DepthMapRes,
-      height: DepthMapRes,
+      width: FBORES,
+      height: FBORES,
     }),
-  })
+  });
 
   const planeFrameBuffer = regl.framebuffer({
     color: regl.texture({
-      width: DepthMapRes,
-      height: DepthMapRes,
+      width: FBORES,
+      height: FBORES,
     }),
-  })
+  });
 
   const drawDepth = regl({
     frag: depthFrag,
@@ -193,88 +265,71 @@ window.onload = () => {
       planeView,
       planeProjection,
       depthMap: depthFrameBuffer,
-      model: planeModelTransform,
+      blurOpacity: (context,props) => props.blurOpacity,
+      model: (context, props) => props.planeModelTransform,
     },
     elements: plane.cells,
-    framebuffer: planeFrameBuffer
+    framebuffer: planeFrameBuffer,
   });
 
 
+  // paramaterize the frame buffer these functions write to
+  // regl function to blur left
+  // regl function to blur right
 
-  // first pass: blur and write to new fbo
-  const drawBlur = regl({
-    frag: `
-      precision mediump float;
-      uniform sampler2D shadowTexture;
-      varying vec3 vWorldPos;
+  const horizontalBlurFBO = regl.framebuffer({
+    color: regl.texture({
+      width: FBORES,
+      height: FBORES,
+    }),
+  });
 
-      vec4 blurThreeHoriz(sampler2D image, vec2 uv, float h) {
+  const verticalBlurFBO = regl.framebuffer({
+    color: regl.texture({
+      width: FBORES,
+      height: FBORES,
+    }),
+  });
 
-        vec4 sum = vec4( 0.0 );
-        sum += texture2D( image, vec2( uv.x - 4.0 * h, uv.y ) ) * 0.051;
-        sum += texture2D( image, vec2( uv.x - 3.0 * h, uv.y ) ) * 0.0918;
-        sum += texture2D( image, vec2( uv.x - 2.0 * h, uv.y ) ) * 0.12245;
-        sum += texture2D( image, vec2( uv.x - 1.0 * h, uv.y ) ) * 0.1531;
-        sum += texture2D( image, vec2( uv.x, uv.y ) ) * 0.1633;
-        sum += texture2D( image, vec2( uv.x + 1.0 * h, uv.y ) ) * 0.1531;
-        sum += texture2D( image, vec2( uv.x + 2.0 * h, uv.y ) ) * 0.12245;
-        sum += texture2D( image, vec2( uv.x + 3.0 * h, uv.y ) ) * 0.0918;
-        sum += texture2D( image, vec2( uv.x + 4.0 * h, uv.y ) ) * 0.051;
-        return sum;
-      }
-
-      vec4 blurThreeVertical(sampler2D image, vec2 uv, float v) {
-        vec4 sum = vec4( 0.0 );
-
-        sum += texture2D( image, vec2( uv.x, uv.y - 4.0 * v ) ) * 0.051;
-        sum += texture2D( image, vec2( uv.x, uv.y - 3.0 * v ) ) * 0.0918;
-        sum += texture2D( image, vec2( uv.x, uv.y - 2.0 * v ) ) * 0.12245;
-        sum += texture2D( image, vec2( uv.x, uv.y - 1.0 * v ) ) * 0.1531;
-        sum += texture2D( image, vec2( uv.x, uv.y ) ) * 0.1633;
-        sum += texture2D( image, vec2( uv.x, uv.y + 1.0 * v ) ) * 0.1531;
-        sum += texture2D( image, vec2( uv.x, uv.y + 2.0 * v ) ) * 0.12245;
-        sum += texture2D( image, vec2( uv.x, uv.y + 3.0 * v ) ) * 0.0918;
-        sum += texture2D( image, vec2( uv.x, uv.y + 4.0 * v ) ) * 0.051;
-        
-        return sum;
-      }
-
-      void main() {
-        vec2 sampleCoord = vWorldPos.xy;
-        float v = 5.0;
-        float res = ${DepthMapRes}.0;
-        vec4 vertical = blurThreeVertical(shadowTexture, sampleCoord, v * 1.0 / res);
-        vec4 horiz = blurThreeHoriz(shadowTexture, sampleCoord, v * 1.0 / res);
-        gl_FragColor = mix(vertical, horiz, .5);
-      }
-    
-    `,
-    vert: `
-      precision mediump float;
-      attribute vec3 position;
-      attribute vec2 uv;
-      uniform mat4 planeProjection, planeView, model;
-      varying vec3 vWorldPos;
-      void main() {
-        vec4 pos = planeProjection * planeView * model * vec4(position, 1.0);
-        vWorldPos = vec3(uv, 1.0);
-        gl_Position = pos;
-      }
-    `,
+  // apply left blur pass.
+  // default read from right blur fbo
+  const blurHorizontal = regl({
+    vert: blurVertSource,
+    frag: blurHorizontalFragSource,
     attributes: {
       position: plane.positions,
-      uv: plane.uvs
+      uv: plane.uvs,
     },
     uniforms: {
       planeProjection,
       planeView,
-      model: planeModelTransform,
-      shadowTexture: planeFrameBuffer
+      model: (context, props) => props.planeModelTransform,
+      blurAmount: (context, props) => props.blurAmount,
+      fbo: (context, props) => props.fbo || verticalBlurFBO,
     },
-    framebuffer: blurFBO,
-    elements: plane.cells
+    framebuffer: horizontalBlurFBO,
+    elements: plane.cells,
   });
 
+  // apply right blur pass
+  // default read from left blur fbo
+  const blurVertical = regl({
+    vert: blurVertSource,
+    frag: blurVerticalFragSource,
+    attributes: {
+      position: plane.positions,
+      uv: plane.uvs,
+    },
+    uniforms: {
+      planeProjection,
+      planeView,
+      model: (context, props) => props.planeModelTransform,
+      blurAmount: (context, props) => props.blurAmount,
+      fbo: (context, props) => props.fbo || horizontalBlurFBO,
+    },
+    framebuffer: verticalBlurFBO,
+    elements: plane.cells,
+  });
 
   // second pass
   const drawPlane = regl({
@@ -282,47 +337,10 @@ window.onload = () => {
       precision mediump float;
       uniform sampler2D shadowTexture;
       varying vec3 vWorldPos;
-
-      vec4 blurThreeHoriz(sampler2D image, vec2 uv, float h) {
-
-        vec4 sum = vec4( 0.0 );
-        sum += texture2D( image, vec2( uv.x - 4.0 * h, uv.y ) ) * 0.051;
-        sum += texture2D( image, vec2( uv.x - 3.0 * h, uv.y ) ) * 0.0918;
-        sum += texture2D( image, vec2( uv.x - 2.0 * h, uv.y ) ) * 0.12245;
-        sum += texture2D( image, vec2( uv.x - 1.0 * h, uv.y ) ) * 0.1531;
-        sum += texture2D( image, vec2( uv.x, uv.y ) ) * 0.1633;
-        sum += texture2D( image, vec2( uv.x + 1.0 * h, uv.y ) ) * 0.1531;
-        sum += texture2D( image, vec2( uv.x + 2.0 * h, uv.y ) ) * 0.12245;
-        sum += texture2D( image, vec2( uv.x + 3.0 * h, uv.y ) ) * 0.0918;
-        sum += texture2D( image, vec2( uv.x + 4.0 * h, uv.y ) ) * 0.051;
-        return sum;
-      }
-
-      vec4 blurThreeVertical(sampler2D image, vec2 uv, float v) {
-        vec4 sum = vec4( 0.0 );
-
-        sum += texture2D( image, vec2( uv.x, uv.y - 4.0 * v ) ) * 0.051;
-        sum += texture2D( image, vec2( uv.x, uv.y - 3.0 * v ) ) * 0.0918;
-        sum += texture2D( image, vec2( uv.x, uv.y - 2.0 * v ) ) * 0.12245;
-        sum += texture2D( image, vec2( uv.x, uv.y - 1.0 * v ) ) * 0.1531;
-        sum += texture2D( image, vec2( uv.x, uv.y ) ) * 0.1633;
-        sum += texture2D( image, vec2( uv.x, uv.y + 1.0 * v ) ) * 0.1531;
-        sum += texture2D( image, vec2( uv.x, uv.y + 2.0 * v ) ) * 0.12245;
-        sum += texture2D( image, vec2( uv.x, uv.y + 3.0 * v ) ) * 0.0918;
-        sum += texture2D( image, vec2( uv.x, uv.y + 4.0 * v ) ) * 0.051;
-        
-        return sum;
-      }
-
       void main() {
         vec2 sampleCoord = vWorldPos.xy;
-        float v = 5.0 * .5;
-        float res = ${DepthMapRes}.0;
-        vec4 vertical = blurThreeVertical(shadowTexture, sampleCoord, v * 1.0 / res);
-        vec4 horiz = blurThreeHoriz(shadowTexture, sampleCoord, v * 1.0 / res);
-        gl_FragColor = mix(vertical, horiz, .5);
+        gl_FragColor = texture2D(shadowTexture, sampleCoord);
       }
-
     `,
     vert: `
       precision mediump float;
@@ -338,16 +356,16 @@ window.onload = () => {
     `,
     attributes: {
       position: plane.positions,
-      uv: plane.uvs
+      uv: plane.uvs,
     },
     uniforms: {
-      model: planeModelTransform,
-      shadowTexture: blurFBO
+      model: (context, props) => props.planeModelTransform,
+      shadowTexture: verticalBlurFBO,
     },
     elements: plane.cells,
     cull: {
       enable: true,
-      face: "front"
+      face: "front",
     },
   });
 
@@ -361,11 +379,35 @@ window.onload = () => {
       position: cube.positions,
       normal: cube.normals,
     },
-    uniforms: { model: () => cubeModelTransform },
+    uniforms: { model: (context, props) => props.cubeTransform },
     elements: cube.cells,
   });
 
-  regl.frame(({tick}) => {
+  let blurAmount = 5;
+  let planeOffset = -1;
+  let blurOpacity = .75;
+
+  const blurAmountSlider = document.getElementById("blur-amount");
+  const planeOffsetSlider = document.getElementById("plane-offset");
+  // const blurOpacitySlider = document.getElementById("blur-opacity");
+  blurAmountSlider.oninput = (e) => {
+    blurAmount = parseFloat(blurAmountSlider.value);
+  };
+
+  planeOffsetSlider.oninput = () => {
+    planeOffset = parseFloat(planeOffsetSlider.value);
+  };
+
+  // blurOpacitySlider.oninput = () => {
+  //   blurOpacity = parseFloat(blurOpacitySlider.value);
+  // };
+
+  regl.frame(({ tick }) => {
+
+
+    planeTransform.translation[1] = planeOffset;
+    const planeModelTransform = getModelTransform(planeTransform);
+
     camera(() => {
       regl.clear({
         color: [1, 1, 1, 1],
@@ -378,30 +420,49 @@ window.onload = () => {
         framebuffer: depthFrameBuffer,
       });
 
-      regl.clear({
-        color: [0,0,0,1],
-        depth: true,
-        framebuffer: planeFrameBuffer
-      })
 
-      // cubeTransform.rotation[1] = Math.sin(tick / 100) * 90;
+      regl.clear({
+        color: [0, 0, 0, 1],
+        depth: true,
+        framebuffer: planeFrameBuffer,
+      });
+
+      regl.clear({
+        color: [0, 0, 0, 1],
+        depth: true,
+        framebuffer: horizontalBlurFBO,
+      });
+
+      regl.clear({
+        color: [0, 0, 0, 1],
+        depth: true,
+        framebuffer: verticalBlurFBO,
+      });
+
+      cubeTransform.rotation[0] += 1;
       cubeModelTransform = getModelTransform(cubeTransform);
 
       // render the cube to the display for human consumption
-      drawCube(() => preDrawCube());
+      drawCube(() => preDrawCube({cubeTransform: cubeModelTransform}));
 
       // render the cube to the depth map for ground plane consumption
-      drawDepth(() => preDrawCube());
+      drawDepth(() => preDrawCube({cubeTransform: cubeModelTransform}));
 
       // render the ground plane to a texture
-      drawShadowPlane();
+      drawShadowPlane({ planeModelTransform, blurOpacity });
 
-
-      // blur texture. 
-      drawBlur();
+      // blur passes
+      blurHorizontal({
+        fbo: planeFrameBuffer,
+        blurAmount,
+        planeModelTransform,
+      });
+      blurVertical({ blurAmount, planeModelTransform });
+      blurHorizontal({ blurAmount: blurAmount * 0.5, planeModelTransform });
+      blurVertical({ blurAmount: blurAmount * 0.5, planeModelTransform });
 
       // draw plane, sampling blurred texture.
-      drawPlane();
+      drawPlane({ planeModelTransform });
     });
   });
 };
